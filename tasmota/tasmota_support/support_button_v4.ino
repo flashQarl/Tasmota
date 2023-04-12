@@ -443,138 +443,46 @@ void ButtonHandler(void) {
     }
 #endif  // ESP8266
     else {
-      if ((PRESSED == button) && (NOT_PRESSED == Button.last_state[button_index])) {
-
-        if (Settings->flag.button_single) {                  // SetOption13 (0) - Allow only single button press for immediate action,
-          if (!Settings->flag3.mqtt_buttons) {               // SetOption73 (0) - Decouple button from relay and send just mqtt topic
-            AddLog(LOG_LEVEL_DEBUG, PSTR("BTN: Button%d immediate"), button_index +1);
+      if (Settings->flag.button_single) {           // SetOption13 (0) - Allow only single button press for immediate action,
+        if (PRESSED == button && NOT_PRESSED == Button.last_state[button_index]) {
+          if (!Settings->flag3.mqtt_buttons) {        // SetOption73 (0) - Decouple button from relay and send just mqtt topic
+            AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_APPLICATION D_BUTTON "%d " D_IMMEDIATE), button_index +1);
             if (!SendKey(KEY_BUTTON, button_index +1, POWER_TOGGLE)) {  // Execute Toggle command via MQTT if ButtonTopic is set
               ExecuteCommandPower(button_index +1, POWER_TOGGLE, SRC_BUTTON);  // Execute Toggle command internally
             }
           } else {
-            MqttButtonTopic(button_index +1, 1, 0);          // SetOption73 1 - Decouple button from relay and send just mqtt topic
+            MqttButtonTopic(button_index +1, 1, 0);  // SetOption73 1 - Decouple button from relay and send just mqtt topic
           }
-        } else {
-          Button.press_counter[button_index] = (Button.window_timer[button_index]) ? Button.press_counter[button_index] +1 : 1;
-          AddLog(LOG_LEVEL_DEBUG, PSTR("BTN: Button%d multi-press %d"), button_index +1, Button.press_counter[button_index]);
-          Button.window_timer[button_index] = loops_per_second / 2;  // 0.5 second multi press window
+          TasmotaGlobal.blinks = 201;
         }
-        TasmotaGlobal.blinks = 201;
       }
-
-      if (NOT_PRESSED == button) {
-        Button.hold_timer[button_index] = 0;
-        if (Settings->flag3.mqtt_buttons && (PRESSED == Button.last_state[button_index]) && !Button.press_counter[button_index]) { // SetOption73 (0) - Decouple button from relay and send just mqtt topic
-          MqttButtonTopic(button_index +1, 6, 0);
-        }
-      } else {
-        Button.hold_timer[button_index]++;
-        if (Settings->flag.button_single) {                  // SetOption13 (0) - Allow only single button press for immediate action
-          if (Button.hold_timer[button_index] == loops_per_second * hold_time_extent * Settings->param[P_HOLD_TIME] / 10) {  // SetOption32 (40) - Button held for factor times longer
-            snprintf_P(scmnd, sizeof(scmnd), PSTR(D_CMND_SETOPTION "13 0"));  // Disable single press only
-            ExecuteCommand(scmnd, SRC_BUTTON);
+      else {
+        if ((NOT_PRESSED == button) && (PRESSED == Button.last_state[button_index]) && (Button.hold_timer[button_index] < loops_per_second * Settings->param[P_HOLD_TIME] / 10)) {
+          if (!Settings->flag3.mqtt_buttons) {        // SetOption73 (0) - Decouple button from relay and send just mqtt topic
+            AddLog(LOG_LEVEL_DEBUG, PSTR(D_LOG_APPLICATION D_BUTTON "%d " D_IMMEDIATE), button_index +1);
+            if (!SendKey(KEY_BUTTON, button_index +1, POWER_TOGGLE)) {  // Execute Toggle command via MQTT if ButtonTopic is set
+              ExecuteCommandPower(button_index +1, POWER_TOGGLE, SRC_BUTTON);  // Execute Toggle command internally
+            }
+          } else {
+            MqttButtonTopic(button_index +1, 1, 0);  // SetOption73 1 - Decouple button from relay and send just mqtt topic
           }
+          TasmotaGlobal.blinks = 201;
+        }
+
+        if (NOT_PRESSED == button) {
+          Button.hold_timer[button_index] = 0;
         } else {
+          Button.hold_timer[button_index]++;
           if (Button.hold_timer[button_index] == loops_per_second * Settings->param[P_HOLD_TIME] / 10) {  // SetOption32 (40) - Button hold
             Button.press_counter[button_index] = 0;
-            if (Settings->flag3.mqtt_buttons) {              // SetOption73 (0) - Decouple button from relay and send just mqtt topic
+            if (Settings->flag3.mqtt_buttons) {       // SetOption73 (0) - Decouple button from relay and send just mqtt topic
               MqttButtonTopic(button_index +1, 3, 1);
             } else {
               SendKey(KEY_BUTTON, button_index +1, POWER_HOLD);  // Execute Hold command via MQTT if ButtonTopic is set
             }
-          } else {
-            if (Settings->flag.button_restrict) {            // SetOption1 (0) - Control button multipress
-              if (Settings->param[P_HOLD_IGNORE] > 0) {      // SetOption40 (0) - Do not ignore button hold
-                if (Button.hold_timer[button_index] > loops_per_second * Settings->param[P_HOLD_IGNORE] / 10) {
-                  Button.hold_timer[button_index] = 0;       // Reset button hold counter to stay below hold trigger
-                  Button.press_counter[button_index] = 0;    // Discard button press to disable functionality
-                }
-              }
-            } else {
-              if ((Button.hold_timer[button_index] == loops_per_second * hold_time_extent * Settings->param[P_HOLD_TIME] / 10)) {  // SetOption32 (40) - Button held for factor times longer
-                Button.press_counter[button_index] = 0;
-                snprintf_P(scmnd, sizeof(scmnd), PSTR(D_CMND_RESET " 1"));
-                ExecuteCommand(scmnd, SRC_BUTTON);
-              }
-            }
           }
         }
       }
-
-      if (!Settings->flag.button_single) {                   // SetOption13 (0) - Allow multi-press
-        if (Button.window_timer[button_index]) {
-          Button.window_timer[button_index]--;
-        } else {
-          if (!TasmotaGlobal.restart_flag && !Button.hold_timer[button_index] && (Button.press_counter[button_index] > 0) && (Button.press_counter[button_index] < 7)) {
-
-            bool single_press = false;
-            if (Button.press_counter[button_index] < 3) {    // Single or Double press
-#ifdef ESP8266
-              if ((SONOFF_DUAL_R2 == TasmotaGlobal.module_type) || (SONOFF_DUAL == TasmotaGlobal.module_type) || (CH4 == TasmotaGlobal.module_type)) {
-                single_press = true;
-              } else
-#endif  // ESP8266
-              {
-                single_press = (Settings->flag.button_swap +1 == Button.press_counter[button_index]);  // SetOption11 (0)
-                if ((1 == Button.used) && (2 == TasmotaGlobal.devices_present)) {  // Single Button with two devices only
-                  if (Settings->flag.button_swap) {          // SetOption11 (0)
-                    Button.press_counter[button_index] = (single_press) ? 1 : 2;
-                  }
-                }
-              }
-            }
-
-            XdrvMailbox.index = button_index;
-            XdrvMailbox.payload = Button.press_counter[button_index];
-            if (XdrvCall(FUNC_BUTTON_MULTI_PRESSED)) {
-              // Serviced
-//                AddLog(LOG_LEVEL_DEBUG, PSTR("BTN: FUNC_BUTTON_MULTI_PRESSED serviced"));
-            } else
-
-#ifdef ROTARY_V1
-            if (!RotaryButtonPressed(button_index)) {
-#endif
-              if (!Settings->flag3.mqtt_buttons && single_press && SendKey(KEY_BUTTON, button_index + Button.press_counter[button_index], POWER_TOGGLE)) {  // Execute Toggle command via MQTT if ButtonTopic is set
-                // Success
-              } else {
-                if (Button.press_counter[button_index] < 6) { // Single to Penta press
-//                    if (WifiState() > WIFI_RESTART) {           // Wifimanager active
-//                      TasmotaGlobal.restart_flag = 1;
-//                    }
-                  if (!Settings->flag3.mqtt_buttons) {       // SetOption73 - Detach buttons from relays and enable MQTT action state for multipress
-                    if (Button.press_counter[button_index] == 1) {  // By default first press always send a TOGGLE (2)
-                      ExecuteCommandPower(button_index + Button.press_counter[button_index], POWER_TOGGLE, SRC_BUTTON);
-                    } else {
-                      SendKey(KEY_BUTTON, button_index +1, Button.press_counter[button_index] +9);    // 2,3,4 and 5 press send just the key value (11,12,13 and 14) for rules
-                      if (0 == button_index) {               // BUTTON1 can toggle up to 5 relays if present. If a relay is not present will send out the key value (2,11,12,13 and 14) for rules
-                        uint32_t max_device = (TasmotaGlobal.devices_present < MAX_RELAY_BUTTON1) ? TasmotaGlobal.devices_present : MAX_RELAY_BUTTON1;
-                        if ((Button.press_counter[button_index] > 1) && (Button.press_counter[button_index] <= max_device)) {
-                          ExecuteCommandPower(button_index + Button.press_counter[button_index], POWER_TOGGLE, SRC_BUTTON);   // Execute Toggle command internally
-                        }
-                      }
-                    }
-                  }
-
-                } else {    // 6 press start wificonfig 2
-                  if (!Settings->flag.button_restrict) {     // SetOption1  - Control button multipress
-                    snprintf_P(scmnd, sizeof(scmnd), PSTR(D_CMND_WIFICONFIG " 2"));
-                    ExecuteCommand(scmnd, SRC_BUTTON);
-                  }
-                }
-                if (Settings->flag3.mqtt_buttons) {          // SetOption73 (0) - Decouple button from relay and send just mqtt topic
-                  if (Button.press_counter[button_index] >= 1 && Button.press_counter[button_index] <= 5) {
-                    MqttButtonTopic(button_index +1, Button.press_counter[button_index], 0);
-                  }
-                }
-              }
-#ifdef ROTARY_V1
-            }
-#endif
-            Button.press_counter[button_index] = 0;
-          }
-        }
-      }
-
     }
     Button.last_state[button_index] = button;
   }
